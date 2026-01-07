@@ -1,28 +1,74 @@
-import { useEffect } from "react";
+import { StatusBar } from 'expo-status-bar';
+import * as SystemUI from 'expo-system-ui';
+import { Fragment, useEffect, useRef } from 'react';
+
+// Uniwind
+import { Uniwind, useUniwind } from 'uniwind';
+
+// React Query
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 // Router
-import { Stack } from "expo-router";
+import { Stack, useRouter, useSegments } from 'expo-router';
 
 // SplashScreen
-import * as SplashScreen from "expo-splash-screen";
+import * as SplashScreen from 'expo-splash-screen';
 
 // Font
 import {
-  useFonts,
-  Montserrat_400Regular,
-  Montserrat_600SemiBold,
-  Montserrat_500Medium,
   Montserrat_300Light,
-} from "@expo-google-fonts/montserrat";
+  Montserrat_400Regular,
+  Montserrat_500Medium,
+  Montserrat_600SemiBold,
+  useFonts,
+} from '@expo-google-fonts/montserrat';
 
-// Style
-import "./../global.css";
-import { View, Text } from "react-native";
+// Constants
+import { ROUTES, SCREEN_COLOR_PRIMARY, SCREENS } from '@/constants';
 
+// Hooks
+import { useAuth } from '@/features/auth/hooks/useAuth';
+import { usePushNotifications } from '@/hooks/usePushNotifications';
+
+// Components
+import { Loading } from '@/components/Loading';
+import { Toast } from '@/components/Toast';
+
+// Error Boundary
+export { ErrorBoundary } from '@/components/ErrorBoundary';
+
+// Prevent the splash screen from auto-hiding
 SplashScreen.preventAutoHideAsync();
-const isStorybook = process.env.EXPO_PUBLIC_ENVIRONMENT === "storybook";
+SystemUI.setBackgroundColorAsync(SCREEN_COLOR_PRIMARY);
 
-export default function RootLayout() {
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      retry: 2,
+      staleTime: 60 * 1000, // 1 minute
+    },
+  },
+});
+
+const StorybookEnabled = process.env.EXPO_PUBLIC_STORYBOOK_ENABLED === 'true';
+
+export const unstable_settings = {
+  initialRouteName: StorybookEnabled ? SCREENS.STORYBOOK : SCREENS.AUTH.LAYOUT,
+};
+
+const RootLayout = () => {
+  const { theme } = useUniwind();
+  const { isAuthenticated, isLoading } = useAuth();
+  const segments = useSegments();
+  const router = useRouter();
+
+  // Track previous authentication state to detect logout vs fresh install
+  const prevIsAuthenticatedRef = useRef<boolean | null>(null);
+  const hasInitializedRef = useRef(false);
+
+  // Initialize push notifications
+  usePushNotifications();
+
   const [loaded, error] = useFonts({
     Montserrat_300Light,
     Montserrat_400Regular,
@@ -31,39 +77,93 @@ export default function RootLayout() {
   });
 
   useEffect(() => {
-    if (loaded || error) {
-      SplashScreen.hideAsync();
-    }
-  }, [loaded, error]);
+    if (error) throw error;
+  }, [error]);
 
-  if (!loaded && !error) {
+  useEffect(() => {
+    Uniwind.setTheme('dark');
+  }, []);
+
+  // Handle authentication routing
+  useEffect(() => {
+    if (isLoading || !loaded) return;
+
+    if (StorybookEnabled) {
+      // If storybook is enabled, do not perform any redirects
+      SplashScreen.hideAsync();
+      return;
+    }
+
+    // Track if this is the first initialization
+    if (!hasInitializedRef.current) {
+      hasInitializedRef.current = true;
+      prevIsAuthenticatedRef.current = isAuthenticated;
+    }
+
+    const inAuthGroup = segments[0] === SCREENS.AUTH.LAYOUT;
+
+    if (!isAuthenticated && !inAuthGroup) {
+      // Detect logout: user was authenticated before but now is not
+      // Fresh install: user was never authenticated (prevIsAuthenticatedRef is null or false)
+      const wasAuthenticatedBefore = prevIsAuthenticatedRef.current === true;
+      const isLogout = wasAuthenticatedBefore && !isAuthenticated;
+
+      // Only redirect to signin if user logged out (was authenticated before)
+      // Otherwise, redirect to onboarding for new users
+      router.replace(isLogout ? ROUTES.LOGIN : ROUTES.ONBOARDING);
+    } else if (isAuthenticated && inAuthGroup) {
+      const currentScreen = segments[segments.length - 1];
+
+      const isComingFromRegister = currentScreen === SCREENS.AUTH.SIGNUP;
+
+      if (isComingFromRegister) {
+        router.replace(ROUTES.WELCOME);
+      } else {
+        router.replace(ROUTES.HOME);
+      }
+    }
+
+    // Update previous authentication state
+    prevIsAuthenticatedRef.current = isAuthenticated;
+
+    // Hide splash screen
+    SplashScreen.hideAsync();
+  }, [isAuthenticated, segments, isLoading, loaded, router]);
+
+  if (!loaded) {
     return null;
   }
 
-  if (isStorybook && __DEV__) {
-    const StorybookUI = require("../../.rnstorybook").default;
-    return <StorybookUI />;
-  }
-
   return (
-    <Stack
-      screenOptions={{
-        headerStyle: {
-          backgroundColor: "#0b0f2f",
-        },
-        headerBackVisible: false,
-        headerTintColor: "#ffffff",
-        headerTitleStyle: {
-          fontFamily: "Montserrat_600SemiBold",
-          fontSize: 20,
-        },
-        // header: () => <View className="bg-dark-blue h-40 p-10"><Text className="text-white">Header</Text></View>,
-      }}
-    >
-      <Stack.Screen name="index" options={{ title: "Home" }} />
-      <Stack.Protected guard={__DEV__}>
-        <Stack.Screen name="storybook" options={{ title: "Storybook" }} />
-      </Stack.Protected>
-    </Stack>
+    <Fragment>
+      <QueryClientProvider client={queryClient}>
+        <Stack
+          screenOptions={{
+            headerShown: false,
+            contentStyle: { backgroundColor: SCREEN_COLOR_PRIMARY },
+          }}
+        >
+          {/* Storybook - Only accessible when enabled */}
+          <Stack.Protected guard={StorybookEnabled}>
+            <Stack.Screen name={SCREENS.STORYBOOK} />
+          </Stack.Protected>
+
+          {/* Auth screens - Only accessible when NOT authenticated */}
+          <Stack.Protected guard={!isAuthenticated}>
+            <Stack.Screen name={SCREENS.AUTH.LAYOUT} />
+          </Stack.Protected>
+
+          {/* Protected screens - Only accessible when authenticated */}
+          <Stack.Protected guard={isAuthenticated}>
+            <Stack.Screen name={SCREENS.MAIN.LAYOUT} />
+          </Stack.Protected>
+        </Stack>
+        <StatusBar style={theme === 'light' ? 'dark' : 'light'} />
+        <Toast />
+        <Loading />
+      </QueryClientProvider>
+    </Fragment>
   );
-}
+};
+
+export default RootLayout;

@@ -33,6 +33,9 @@ yarn-error.*
 # local env files
 .env*.local
 
+# Environment
+.env
+
 # typescript
 *.tsbuildinfo
 
@@ -44,3 +47,11 @@ app-example
 
 # coverage
 coverage/
+
+# fetch movies
+fetch_tmdb_movies.js
+movies_120_insert.sql
+
+# google-services files
+google-services.json
+movies-ticket-booking.json
